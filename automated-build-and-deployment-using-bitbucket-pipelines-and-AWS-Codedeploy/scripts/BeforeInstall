@@ -1,0 +1,11 @@
+#!/bin/bash
+if ! test -d "/mnt/oldjars"; then
+  mkdir /mnt/oldjars
+fi
+
+sudo cp -p /opt/application/application.jar /mnt/oldjars/application.jar.`date +%Y.%m.%d+%H:%M:%S`
+
+for f in $(find /mnt/oldjars -name '*.jar.*' -mtime +30)
+do
+ sudo rm -rf $f
+done

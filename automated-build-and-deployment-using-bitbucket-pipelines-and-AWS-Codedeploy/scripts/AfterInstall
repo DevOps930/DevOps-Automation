@@ -1,0 +1,5 @@
+#!/bin/bash
+mv /opt/application/application-0.0.1-SNAPSHOT.jar /opt/application/application.jar
+chmod o+x /opt/application/application.jar
+chkconfig --add application
+chkconfig application on

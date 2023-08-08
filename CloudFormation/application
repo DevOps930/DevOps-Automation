@@ -1,0 +1,19 @@
+#!/bin/bash
+
+mkdir /opt/application
+mkdir /opt/application/logs
+mkdir /opt/application/config
+mkdir /mnt/logs/application
+ln -s /mnt/logs/application /opt/application/logs
+
+aws s3 cp s3://Dev/application.jar /opt/application/application.jar --quiet
+chmod o+x /opt/application/application.jar
+ln -s /opt/application/application.jar /etc/init.d/application
+ln -s /etc/init.d/application /etc/rc.d/application
+
+cp ./configuration/application/opt/application/config/application.properties /opt/application/config/application.properties
+
+chkconfig --add application
+chkconfig application on
+/etc/init.d/application start
+

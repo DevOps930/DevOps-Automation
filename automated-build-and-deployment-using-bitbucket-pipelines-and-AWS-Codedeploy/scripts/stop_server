@@ -1,0 +1,10 @@
+#!/bin/bash
+
+process=/opt/application/application.jar
+if pgrep -f "$process" > /dev/null; then
+ application_pid=$(pgrep -f "$process")
+ sudo kill -9 $application_pid
+else
+ echo "Process Not Running"
+ exit
+fi

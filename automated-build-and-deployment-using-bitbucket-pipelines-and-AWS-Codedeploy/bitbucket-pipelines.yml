@@ -1,0 +1,260 @@
+definitions:
+  steps:
+    - step: &Build-code
+        name: Build Code
+        image: maven:3.6.2
+        size: 2x
+        caches:
+          - maven
+        script:
+          - mvn -B -s install
+           
+    - step: &Build-Code-Dev
+        name: Build Code for Dev Environment
+        image: maven:3.6.2
+        size: 2x
+        caches:
+          - maven
+        script:     
+          - mvn -B -s install
+        artifacts:
+          - target/application-0.0.1-SNAPSHOT.jar
+
+    - step: &Build-Code-QA
+        name: Build Code for QA Environment
+        image: maven:3.6.2
+        size: 2x
+        caches:
+          - maven
+        script:
+          - mvn -B -s install
+        artifacts:
+          - target/application-0.0.1-SNAPSHOT.jar
+          
+    - step: &Deploy-to-Dev-EC2-Instance
+        name: Deploy to Dev EC2 Instance
+        trigger: manual
+        image: atlassian/pipelines-awscli
+        size: 2x
+        script:
+          - export AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID
+          - export AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY
+          - export AWS_DEFAULT_REGION=$AWS_DEFAULT_REGION
+          - aws deploy push --application-name=$APPLICATION_NAME --s3-location=s3://Dev/application/application.zip
+          - versionId=$(aws s3api head-object --bucket=Dev --key=application/application.zip --query VersionId --output text)
+          - eTagtemp=$(aws s3api head-object --bucket=Dev --key=application/application.zip --query ETag --output text)
+          - eTag=$(echo "$eTagtemp" | tr -d '"')
+          - aws deploy create-deployment --application-name=$APPLICATION_NAME --s3-location bucket=Dev,key=application/application.zip,bundleType=zip,version=$versionId,eTag=$eTag --deployment-group-name=$DEPLOYMENT_GROUP_NAME --auto-rollback-configuration enabled=true,events=DEPLOYMENT_FAILURE --file-exists-behavior=RETAIN
+
+    - step: &Deploy-to-QA-EC2-Instance
+        name: Deploy to QA EC2 Instance
+        image: atlassian/pipelines-awscli
+        size: 2x
+        script:
+          - export AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID
+          - export AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY
+          - export AWS_DEFAULT_REGION=$AWS_DEFAULT_REGION
+          - aws deploy push --application-name=$APPLICATION_NAME --s3-location=s3://QA/application/application.zip
+          - versionId=$(aws s3api head-object --bucket=QA --key=application/application.zip --query VersionId --output text)
+          - eTagtemp=$(aws s3api head-object --bucket=QA --key=application/application.zip --query ETag --output text)
+          - eTag=$(echo "$eTagtemp" | tr -d '"')
+          - aws deploy create-deployment --application-name=$APPLICATION_NAME --s3-location bucket=QA,key=application/application.zip,bundleType=zip,version=$versionId,eTag=$eTag --deployment-group-name=$DEPLOYMENT_GROUP_NAME_QA --auto-rollback-configuration enabled=true,events=DEPLOYMENT_FAILURE --file-exists-behavior=RETAIN
+
+    - step: &Build-Code-Staging-Pilot-Production
+        name: Build Code Staging Pilot Production
+        image: maven:3.6.2
+        size: 2x
+        caches:
+          - maven
+        script:
+          - curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+          - unzip awscliv2.zip
+          - ./aws/install
+          - ln -sf /usr/local/bin/aws /bin/aws
+          - export AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID
+          - export AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY
+          - export AWS_DEFAULT_REGION=$AWS_DEFAULT_REGION
+          - mvn -B clean
+          - mvn -Dmaven.test.skip=true package
+        artifacts:
+          - target/application-0.0.1-SNAPSHOT.jar
+
+    - step: &uploadjartoAWSCloudS3Bucket
+        name: upload jar to AWS Cloud S3 Bucket
+        image: fuinorg/atlassian-default-image-awscli:latest
+        size: 2x
+        script:
+          - export AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID
+          - export AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY
+          - export AWS_DEFAULT_REGION=$AWS_DEFAULT_REGION
+          - VERSION=$(echo $BITBUCKET_BRANCH | cut -d'/' -f 2)
+          - echo $VERSION
+          - ARTIFACT=$(echo application)
+          - echo $ARTIFACT
+          - cp target/application-0.0.1-SNAPSHOT.jar ./$ARTIFACT-$VERSION.jar
+          - cp target/application-0.0.1-SNAPSHOT.jar target/$ARTIFACT-$VERSION.jar
+          - md5sum target/$ARTIFACT-$VERSION.jar > $ARTIFACT-$VERSION.md5
+          - git rev-parse --short HEAD>git.commit.id
+          - aws s3 cp $ARTIFACT-$VERSION.md5 s3://Staging/$ARTIFACT/$BITBUCKET_BRANCH/$ARTIFACT-$VERSION.md5
+          - aws s3 cp target/application-0.0.1-SNAPSHOT.jar s3://Staging/$ARTIFACT/$BITBUCKET_BRANCH/$ARTIFACT-$VERSION.jar
+          - aws s3 cp git.commit.id s3://Staging/$ARTIFACT/$BITBUCKET_BRANCH/git.commit.id
+              
+    - step: &Zip-For-Deployment
+        name: Zip For Deployment
+        image: atlassian/default-image:2
+        script:
+          - zip -r application.zip . -x '*.git*'
+        artifacts:
+          - application.zip
+          
+    - step: &Upload-Deployment
+        name: Upload Deployment
+        script:
+          - pipe: atlassian/aws-code-deploy:0.2.10
+            variables:
+              AWS_DEFAULT_REGION: $AWS_DEFAULT_REGION
+              AWS_ACCESS_KEY_ID: $AWS_ACCESS_KEY_ID
+              AWS_SECRET_ACCESS_KEY: $AWS_SECRET_ACCESS_KEY
+              COMMAND: 'upload'
+              APPLICATION_NAME: $APPLICATION_NAME
+              ZIP_FILE: 'application.zip'
+              S3_BUCKET: 'application-deploy'
+              
+    - step: &Deploy-to-staging
+        name: Deploy to staging
+        deployment: staging
+        trigger: manual
+        script:
+          - pipe: atlassian/aws-code-deploy:0.2.10
+            variables:
+              AWS_DEFAULT_REGION: $AWS_DEFAULT_REGION
+              AWS_ACCESS_KEY_ID: $AWS_ACCESS_KEY_ID
+              AWS_SECRET_ACCESS_KEY: $AWS_SECRET_ACCESS_KEY
+              COMMAND: 'deploy'
+              APPLICATION_NAME: $APPLICATION_NAME
+              DEPLOYMENT_GROUP: $DEPLOYMENT_GROUP_NAME_STAGING
+              WAIT: 'true'
+              S3_BUCKET: 'application-deploy'
+              FILE_EXISTS_BEHAVIOR: 'OVERWRITE'
+              
+    - step: &Deploy-to-pilot
+        name: Deploy to pilot
+        deployment: pilot
+        trigger: manual
+        script:
+          - pipe: atlassian/aws-code-deploy:0.2.10
+            variables:
+              AWS_DEFAULT_REGION: $AWS_DEFAULT_REGION
+              AWS_ACCESS_KEY_ID: $AWS_ACCESS_KEY_ID
+              AWS_SECRET_ACCESS_KEY: $AWS_SECRET_ACCESS_KEY
+              COMMAND: 'deploy'
+              APPLICATION_NAME: $APPLICATION_NAME
+              DEPLOYMENT_GROUP: $DEPLOYMENT_GROUP_NAME_PILOT
+              WAIT: 'true'
+              S3_BUCKET: 'application-deploy'
+              FILE_EXISTS_BEHAVIOR: 'OVERWRITE'
+        
+    - step: &Deploy-to-production
+        name: Deploy to production
+        deployment: production
+        trigger: manual
+        script:
+          - pipe: atlassian/aws-code-deploy:0.2.10
+            variables:
+              AWS_DEFAULT_REGION: $AWS_DEFAULT_REGION
+              AWS_ACCESS_KEY_ID: $AWS_ACCESS_KEY_ID
+              AWS_SECRET_ACCESS_KEY: $AWS_SECRET_ACCESS_KEY
+              COMMAND: 'deploy'
+              APPLICATION_NAME: $APPLICATION_NAME
+              DEPLOYMENT_GROUP: $DEPLOYMENT_GROUP_NAME_PRODUCTION
+              WAIT: 'true'
+              S3_BUCKET: 'application-deploy'
+              FILE_EXISTS_BEHAVIOR: 'OVERWRITE'
+
+    - step: &Clear-Cache
+        name: Clear Cache
+        script:
+          - pipe: atlassian/bitbucket-clear-cache:3.2.0
+            variables:
+              BITBUCKET_USERNAME: $BITBUCKET_UNAME
+              BITBUCKET_APP_PASSWORD: $BITBUCKET_PASSWD
+
+    - step: &Create-Hotfix-Branch
+        name: Create Hotfix Branch
+        script:
+          - echo "Create Hotfix Branch"
+          - >
+            if  b1=$(echo $BITBUCKET_BRANCH | grep -i "release/"); then
+            if output=$(echo $BITBUCKET_BRANCH | grep [.] | cut -d '.' -f2); then
+             v1=$(echo $BITBUCKET_BRANCH | cut -c 1-50)
+             v2=$(echo $BITBUCKET_BRANCH | grep [.] | cut -d '.' -f1)
+             v4=$(echo $BITBUCKET_BRANCH | cut -d '/' -f2)
+             v5=$(echo $BITBUCKET_BRANCH | grep [.] | cut -d '.' -f1 | cut -d '/' -f2)
+             v6=$(echo $BITBUCKET_BRANCH | grep [.] | cut -d '/' -f2)
+             if v3=$(echo $BITBUCKET_BRANCH | grep [.]); then
+              x=$output
+              a=$((++x));
+              echo "already hotfix"
+              echo $v2.$a
+              git branch $v2.$a
+              git push origin $v2.$a
+             else
+              x=$output
+              a=$((++x));
+              echo "creating hotfix"
+              echo $v1.$a
+              git branch $v1.$a
+              git push origin $v1.$a
+              fi
+            else
+              echo "Failed"
+            fi
+            else
+             echo "Branch should be release"
+            fi 
+
+pipelines:
+  default:
+    - step: *Build-code
+
+  branches:
+    develop:
+      - step: *Build-Code-Dev
+      - step: *Deploy-to-Dev-EC2-Instance
+    release/*:
+      - step: *Build-Code-Staging-Pilot-Production
+      - step: *uploadjartoAWSCloudS3Bucket
+      - step: *Zip-For-Deployment
+      - step: *Upload-Deployment
+      - step: *Deploy-to-staging
+      - step: *Deploy-to-pilot
+      - step: *Deploy-to-production
+
+  custom:
+    release-branch:
+      - step:
+          script:
+            - git branch release/$(date +'%Y-%m-%d')
+            - git push origin release/$(date +'%Y-%m-%d')
+    create-hotfix-branch:
+      - step: *Create-Hotfix-Branch
+    release-branch-hotfix-pilot:
+      - step: *Build-Code-Staging-Pilot-Production
+      - step: *uploadjartoAWSCloudS3Bucket
+      - step: *Zip-For-Deployment
+      - step: *Upload-Deployment
+      - step: *Deploy-to-pilot
+      - step: *Deploy-to-production
+    release-branch-hotfix-production:
+      - step: *Build-Code-Staging-Pilot-Production
+      - step: *uploadjartoAWSCloudS3Bucket
+      - step: *Zip-For-Deployment
+      - step: *Upload-Deployment
+      - step: *Deploy-to-production
+    develop-branch-QA:
+      - step: *Build-Code-QA
+      - step: *Deploy-to-QA-EC2-Instance
+    develop-branch-Test:
+      - step: *Clear-Cache
+      - step: *Build-Code-Dev
+      - step: *Deploy-to-Dev-EC2-Instance
